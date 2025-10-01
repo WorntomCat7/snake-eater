@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Snake Eater — Missão dos Buracos </title>
+    <style>
+        :root {
+            --cell: 20px
+        }
+
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+            margin: 0;
+            display: flex;
+            gap: 18px;
+            padding: 18px;
+            background: #071028;
+            color: #e6f0ff
+        }
+
+        canvas {
+            background: #041122;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, .6);
+            display: block
+        }
+
+        .panel {
+            width: 340px
+        }
+
+        h1 {
+            font-size: 18px;
+            margin: 0 0 8px
+        }
+
+        button {
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 0;
+            background: #124;
+            color: #fff;
+            cursor: pointer
+        }
+
+        .muted {
+            opacity: .85;
+            font-size: 13px
+        }
+
+        .row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <canvas id="game"></canvas>
+    </main>
+    <aside class="panel">
+        <h1>🐍 Snake Eater — Missão dos Buracos</h1>
+        <div class="row">
+            <div><strong>Pontuação</strong></div>
+            <div id="score">0</div>
+        </div>
+        <div class="row">
+            <div><strong>Status</strong></div>
+            <div id="status">Pronto</div>
+        </div>
+        <p class="muted">Mapa: <strong>50 × 20</strong> — Controles: setas / WASD. Interaja com buracos para gerar
+            maçãs. Buraco final aparece <strong>2s antes</strong> da águia. A águia não atravessa o corpo da cobra (mas
+            captura a cabeça).</p>
+        <div style="margin-top:8px" class="row">
+            <button id="start">Iniciar</button>
+            <button id="pause">Pausar</button>
+            <button id="reset">Reiniciar</button>
+        </div>
+        <hr />
+        <div class="muted">Legenda: 🐍 Cobra • 🍎 Maçã • 🕳️ Buraco • 🦅 Águia • 💥 Explosão</div>
+    </aside>
+
+    <script>
+        (() => {
+            const COLS = 50, ROWS = 20;
+            const CELL = 20;
+            const canvas = document.getElementById('game');
+            canvas.width = COLS * CELL;
+            canvas.height = ROWS * CELL;
+            const ctx = canvas.getContext('2d');
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+            const EM = { bg: '🌾', head: '🐍', body: '🟩', apple: '🍎', hole: '🕳️', eagle: '🦅', boom: '💥' };
+
+            const scoreEl = document.getElementById('score');
+            const statusEl = document.getElementById('status');
+            const startBtn = document.getElementById('start');
+            const pauseBtn = document.getElementById('pause');
+            const resetBtn = document.getElementById('reset');
+
+            let snake = [];
+            let dir = { x: 1, y: 0 };
+            let nextDir = { x: 1, y: 0 };
+            let holes = [];
+            let apples = [];
+            let eagle = null;
+            let finalHole = null;
+            let score = 0;
+            let running = false;
+            let tickMs = 140;
+            let tickInterval = null;
+
+            function randInt(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; }
+
+            function generateHolePositions() {
+                const pts = [];
+                const minDist = 8;
+                while (pts.length < 3) {
+                    const x = randInt(3, COLS - 4);
+                    const y = randInt(2, ROWS - 3);
+                    if (pts.some(p => Math.hypot(p.x - x, p.y - y) < minDist)) continue;
+                    pts.push({ x, y });
+                }
+                return pts;
+            }
+
+            function setupHoles() {
+                const pts = generateHolePositions();
+                holes = [
+                    { id: 1, x: pts[0].x, y: pts[0].y, type: 1, state: 'closed' },
+                    { id: 2, x: pts[1].x, y: pts[1].y, type: 2, state: 'closed' },
+                    { id: 3, x: pts[2].x, y: pts[2].y, type: 3, state: 'closed' }
+                ];
+            }
+
+            function resetGame() {
+                snake = [];
+                const sx = Math.floor(COLS / 4), sy = Math.floor(ROWS / 2);
+                snake.push({ x: sx, y: sy });
+                snake.push({ x: sx - 1, y: sy });
+                snake.push({ x: sx - 2, y: sy });
+                dir = { x: 1, y: 0 }; nextDir = { x: 1, y: 0 };
+                apples = [];
+                eagle = null; finalHole = null; score = 0; running = false;
+                status('Pronto — ative os buracos andando sobre eles');
+                setupHoles();
+                updateScore();
+                stopTicks();
+                draw();
+            }
+
+            function updateScore() { scoreEl.textContent = score; }
+            function status(txt) { statusEl.textContent = txt; }
+
+            function startTicks() { if (tickInterval) clearInterval(tickInterval); tickInterval = setInterval(tick, tickMs); }
+            function stopTicks() { if (tickInterval) clearInterval(tickInterval); tickInterval = null; }
+
+            function findFreeCell(maxAttempts = 1000) {
+                for (let i = 0; i < maxAttempts; i++) {
+                    const x = randInt(0, COLS - 1), y = randInt(0, ROWS - 1);
+                    if (snake.some(s => s.x === x && s.y === y)) continue;
+                    if (holes.some(h => h.state !== 'removed' && h.x === x && h.y === y)) continue;
+                    if (apples.some(a => a.x === x && a.y === y)) continue;
+                    if (eagle && eagle.x === x && eagle.y === y) continue;
+                    if (finalHole && finalHole.x === x && finalHole.y === y) continue;
+                    return { x, y };
+                }
+                return null;
+            }
+
+            function activateHole(h) {
+                if (h.state !== 'closed') return;
+                h.state = 'open';
+                let count = 0, respawns = 0;
+                if (h.type === 1) { count = 3; respawns = 0; }
+                else if (h.type === 2) { count = 4; respawns = 1; }
+                else if (h.type === 3) { count = 5; respawns = 3; }
+
+                for (let i = 0; i < count; i++) {
+                    const pos = findFreeCell();
+                    if (!pos) break;
+                    apples.push({ x: pos.x, y: pos.y, respawnsRemaining: respawns, originId: h.id });
+                }
+
+                status(`Buraco ${h.id} ativado — ${count} maçãs (respawns por maçã: ${respawns})`);
+            }
+
+            function checkHoleRemoval() {
+                holes.forEach(h => {
+                    if (h.state === 'open') {
+                        const any = apples.some(a => a.originId === h.id);
+                        if (!any) { h.state = 'removed'; }
+                    }
+                });
+            }
+
+            let holesResolvedHandled = false;
+            function maybeSpawnFinalAndEagle() {
+                if (holesResolvedHandled) return;
+                if (holes.every(h => h.state === 'removed')) {
+                    holesResolvedHandled = true;
+                    const fh = findFreeCell(); if (fh) { finalHole = { x: fh.x, y: fh.y }; status('Buraco final apareceu! Fique atento.'); }
+                    setTimeout(() => {
+                        const pos = findFreeCell();
+                        if (pos) { eagle = { x: pos.x, y: pos.y, active: true }; status('Águia apareceu — fuja!'); }
+                        else { eagle = { x: Math.floor(COLS / 2), y: 0, active: true }; status('Águia apareceu — fuja!'); }
+                    }, 2000);
+                }
+            }
+
+            function moveEagle() {
+                if (!eagle || !eagle.active) return;
+                const ex = eagle.x, ey = eagle.y;
+                const hx = snake[0].x, hy = snake[0].y;
+                const dx = Math.sign(hx - ex), dy = Math.sign(hy - ey);
+
+                const candidates = [];
+                if (Math.abs(hx - ex) >= Math.abs(hy - ey)) {
+                    candidates.push({ x: ex + dx, y: ey });
+                    candidates.push({ x: ex, y: ey + dy });
+                } else {
+                    candidates.push({ x: ex, y: ey + dy });
+                    candidates.push({ x: ex + dx, y: ey });
+                }
+                candidates.push({ x: ex + dx, y: ey + dy });
+                candidates.push({ x: ex + 1, y: ey }); candidates.push({ x: ex - 1, y: ey }); candidates.push({ x: ex, y: ey + 1 }); candidates.push({ x: ex, y: ey - 1 });
+                let chosen = null;
+                for (const c of candidates) {
+                    if (c.x < 0 || c.x >= COLS || c.y < 0 || c.y >= ROWS) continue;
+                    const isHead = (c.x === hx && c.y === hy);
+                    const occupiesBody = snake.some((s, idx) => idx > 0 && s.x === c.x && s.y === c.y);
+                    if (occupiesBody && !isHead) continue;
+                    chosen = c; break;
+                }
+                if (chosen) {
+                    eagle.x = chosen.x; eagle.y = chosen.y;
+                    if (eagle.x === hx && eagle.y === hy) {
+                        explodeAt(eagle.x, eagle.y, () => {
+                            endGame(false, 'A águia capturou a cabeça — explosão!');
+                        });
+                    }
+                }
+            }
+            function explodeAt(x, y, cb) {
+                const frames = ['💥', '🔥', '💥', '💥'];
+                let f = 0;
+                stopTicks();
+                const iv = setInterval(() => {
+                    draw();
+                    ctx.font = Math.floor(CELL * 1.2) + 'px "Segoe UI Emoji"';
+                    ctx.fillText(frames[f % frames.length], x * CELL + CELL / 2, y * CELL + CELL / 2);
+                    f++;
+                    if (f > 6) { clearInterval(iv); cb(); }
+                }, 90);
+            }
+            function tick() {
+                if (!(nextDir.x === -dir.x && nextDir.y === -dir.y)) dir = { ...nextDir };
+                const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+                if (head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS) { endGame(false, 'Você bateu na parede!'); return; }
+                if (snake.some((s, idx) => idx > 0 && s.x === head.x && s.y === head.y)) { endGame(false, 'Você bateu em si mesmo!'); return; }
+                snake.unshift(head);
+                let ate = false;
+                for (let i = apples.length - 1; i >= 0; i--) {
+                    const a = apples[i];
+                    if (a.x === head.x && a.y === head.y) {
+                        ate = true; score += 10; updateScore();
+                        if (a.respawnsRemaining > 0) {
+                            a.respawnsRemaining -= 1;
+                            const p = findFreeCell();
+                            if (p) { a.x = p.x; a.y = p.y; }
+                            else { apples.splice(i, 1); }
+                        } else {
+                            apples.splice(i, 1);
+                        }
+                    }
+                }
+                for (const h of holes) {
+                    if (h.state === 'closed' && head.x === h.x && head.y === h.y) { activateHole(h); }
+                }
+                if (finalHole && head.x === finalHole.x && head.y === finalHole.y) { endGame(true, 'Você entrou no buraco final — Missão concluída!'); return; }
+                if (!ate) snake.pop();
+                checkHoleRemoval();
+                maybeSpawnFinalAndEagle();
+                if (eagle && eagle.active) moveEagle();
+
+                draw();
+            }
+
+            function endGame(victoryFlag, message) {
+                running = false;
+                stopTicks();
+                if (message) status(message);
+                if (!victoryFlag) {
+                    explodeAt(snake[0].x, snake[0].y, () => {
+                        alert(message || 'Game over');
+                    });
+                } else {
+                    setTimeout(() => alert(message || 'Você venceu!'), 120);
+                }
+            }
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.font = Math.floor(CELL * 0.95) + 'px "Segoe UI Emoji","Noto Color Emoji",sans-serif';
+                for (let y = 0; y < ROWS; y++) {
+                    for (let x = 0; x < COLS; x++) {
+                        ctx.fillText(EM.bg, x * CELL + CELL / 2, y * CELL + CELL / 2);
+                    }
+                }
+                for (const h of holes) { if (h.state !== 'removed') ctx.fillText(EM.hole, h.x * CELL + CELL / 2, h.y * CELL + CELL / 2); }
+                if (finalHole) ctx.fillText(EM.hole, finalHole.x * CELL + CELL / 2, finalHole.y * CELL + CELL / 2);
+                for (const a of apples) ctx.fillText(EM.apple, a.x * CELL + CELL / 2, a.y * CELL + CELL / 2);
+                if (eagle && eagle.active) ctx.fillText(EM.eagle, eagle.x * CELL + CELL / 2, eagle.y * CELL + CELL / 2);
+                for (let i = snake.length - 1; i >= 0; i--) {
+                    const s = snake[i];
+                    ctx.fillText(i === 0 ? EM.head : EM.body, s.x * CELL + CELL / 2, s.y * CELL + CELL / 2);
+                }
+            }
+            window.addEventListener('keydown', e => {
+                const k = e.key;
+                if (['ArrowUp', 'w', 'W'].includes(k)) nextDir = { x: 0, y: -1 };
+                if (['ArrowDown', 's', 'S'].includes(k)) nextDir = { x: 0, y: 1 };
+                if (['ArrowLeft', 'a', 'A'].includes(k)) nextDir = { x: -1, y: 0 };
+                if (['ArrowRight', 'd', 'D'].includes(k)) nextDir = { x: 1, y: 0 };
+                if (k === ' ') { if (!running) start(); else { running = false; stopTicks(); status('Pausado'); } }
+            });
+
+            startBtn.addEventListener('click', () => { if (!running) { running = true; startTicks(); status('Executando'); } });
+            pauseBtn.addEventListener('click', () => { running = false; stopTicks(); status('Pausado'); });
+            resetBtn.addEventListener('click', () => { resetGame(); });
+            function start() { if (!running) { running = true; startTicks(); status('Executando'); } }
+            resetGame();
+
+        })();
+    </script>
+</body>
+
+</html>
